@@ -1,0 +1,13 @@
+.git
+.gitignore
+.dockerignore
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.idea/
+.vscode/
+*.zip
+chunk_*/
+README.md

@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no" />
+  <title>Video Chunker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f4f4f5; --surface: #ffffff; --border: #e4e4e7; --text: #18181b;
+      --muted: #71717a; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a;
+      --radius: 8px; --field-bg: #f4f4f5;
+    }
+    body {
+      font-family: 'Roboto', sans-serif; background: var(--bg); color: var(--text);
+      font-size: 16px; line-height: 1.5; min-height: 100vh; -webkit-text-size-adjust: 100%;
+    }
+    html, body { width: 100%; overflow-x: hidden; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 40; }
+    .header-top { padding: 0 16px; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .header-title { font-size: 16px; font-weight: 700; white-space: nowrap; }
+    @media (min-width: 640px) { .header-top { padding: 0 24px; } }
+    main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
+    @media (min-width: 640px) { main { padding: 28px 24px; } }
+    .page-header { margin-bottom: 20px; }
+    .page-title { font-size: 20px; font-weight: 700; }
+    .page-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    @media (min-width: 640px) { .card { padding: 20px 24px; } }
+    .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; font-weight: 700; }
+    .card .hint { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+    .grid { display: grid; gap: 14px 20px; grid-template-columns: 1fr; }
+    @media (min-width: 540px) { .grid { grid-template-columns: 2fr 1fr; } }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+    .field .unit { color: var(--text); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .field input {
+      font-family: 'Roboto', sans-serif; font-size: 15px; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius); background: var(--field-bg); color: var(--text); outline: none;
+      transition: border-color 0.15s; min-height: 44px; width: 100%; -webkit-appearance: none; appearance: none;
+    }
+    .field input:focus { border-color: var(--accent); }
+    .field .fieldhint { font-size: 12px; color: var(--muted); }
+    .drop {
+      border: 1.5px dashed var(--border); border-radius: 12px; padding: 28px; text-align: center;
+      color: var(--muted); cursor: pointer; transition: border-color 0.15s, background 0.15s; -webkit-tap-highlight-color: transparent;
+    }
+    .drop.hover { border-color: var(--accent); background: #eff6ff; }
+    .drop strong { color: var(--text); font-weight: 700; }
+    .drop.has-file { border-style: solid; border-color: var(--accent); color: var(--text); background: #f0f9ff; }
+    .btn {
+      font-family: 'Roboto', sans-serif; font-size: 15px; font-weight: 500; padding: 10px 18px; border-radius: var(--radius);
+      border: 1px solid transparent; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+      display: inline-flex; align-items: center; justify-content: center; min-height: 44px;
+      -webkit-tap-highlight-color: transparent; width: 100%;
+    }
+    .btn-primary { background: var(--text); color: #fff; border-color: var(--text); }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .bar { height: 6px; background: var(--field-bg); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-top: 16px; display: none; }
+    .bar.show { display: block; }
+    .bar > div { height: 100%; width: 0; background: var(--text); transition: width 0.2s; }
+    .log {
+      font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--field-bg);
+      border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; margin-top: 16px;
+      max-height: 220px; overflow-y: auto; white-space: pre-wrap; color: var(--muted); display: none;
+    }
+    .log.show { display: block; }
+    .log .ok { color: var(--ok); }
+    .log .err { color: var(--danger); }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div class="header-title">Video Chunker</div>
+    </div>
+  </header>
+
+  <main>
+    <div class="page-header">
+      <div class="page-title">Video Chunker</div>
+      <div class="page-sub">Splits a video into ~10-second chunks with clean, flash-free cuts. Processed on the server.</div>
+    </div>
+
+    <div class="card">
+      <h2>Source video</h2>
+      <div class="hint">Pick or drop a file. It uploads to the private team service to be split.</div>
+      <div id="drop" class="drop">
+        <div id="dropText">Drop a video here or <strong>click to choose</strong></div>
+      </div>
+      <input id="file" type="file" accept="video/*" style="display:none">
+    </div>
+
+    <div class="card">
+      <h2>Output</h2>
+      <div class="hint">All chunks come back as a single zip named after your prefix.</div>
+      <div class="grid">
+        <div class="field">
+          <label>Filename prefix</label>
+          <input id="prefix" type="text" placeholder="myclip" value="clip">
+          <div class="fieldhint">Prepended to each chunk number.</div>
+        </div>
+        <div class="field">
+          <label>Chunk length <span class="unit">seconds</span></label>
+          <input id="chunklen" type="number" value="10" min="1" step="1">
+          <div class="fieldhint">Remainder &le;5s merges; &ge;6s splits off.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <button class="btn btn-primary" id="go" disabled>Split video</button>
+      <div id="bar" class="bar"><div id="barFill"></div></div>
+      <div id="log" class="log"></div>
+    </div>
+  </main>
+
+<script>
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+var fileInput = document.getElementById('file');
+var drop = document.getElementById('drop');
+var dropText = document.getElementById('dropText');
+var goBtn = document.getElementById('go');
+var logEl = document.getElementById('log');
+var bar = document.getElementById('bar');
+var barFill = document.getElementById('barFill');
+var chosenFile = null;
+
+function log(msg, cls) {
+  logEl.classList.add('show');
+  var span = document.createElement('div');
+  if (cls) span.className = cls;
+  span.textContent = msg;
+  logEl.appendChild(span);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setFile(f) {
+  if (!f) return;
+  chosenFile = f;
+  drop.classList.add('has-file');
+  dropText.innerHTML = '<strong>' + esc(f.name) + '</strong> (' + (f.size / 1048576).toFixed(1) + ' MB)';
+  goBtn.disabled = false;
+}
+
+drop.addEventListener('click', function () { fileInput.click(); });
+fileInput.addEventListener('change', function (e) { setFile(e.target.files[0]); });
+['dragenter', 'dragover'].forEach(function (ev) {
+  drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('hover'); });
+});
+['dragleave', 'drop'].forEach(function (ev) {
+  drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('hover'); });
+});
+drop.addEventListener('drop', function (e) {
+  if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
+});
+
+goBtn.addEventListener('click', function () {
+  if (!chosenFile) return;
+  goBtn.disabled = true;
+  logEl.innerHTML = ''; logEl.classList.add('show');
+  bar.classList.add('show'); barFill.style.width = '0';
+
+  var prefix = (document.getElementById('prefix').value || 'clip').trim();
+  var chunkLen = document.getElementById('chunklen').value || '10';
+
+  var form = new FormData();
+  form.append('file', chosenFile);
+  form.append('prefix', prefix);
+  form.append('chunk_len', chunkLen);
+
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'split', true);
+  xhr.responseType = 'blob';
+
+  // Upload progress (0–90% of the bar); server processing fills the rest.
+  xhr.upload.onprogress = function (e) {
+    if (e.lengthComputable) {
+      var pct = Math.round((e.loaded / e.total) * 90);
+      barFill.style.width = pct + '%';
+      if (pct < 90) log('Uploading\u2026 ' + pct + '%');
+    }
+  };
+  log('Uploading video\u2026');
+
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState === xhr.HEADERS_RECEIVED) {
+      if (xhr.status === 200) log('Splitting on the server\u2026');
+    }
+  };
+
+  xhr.onload = function () {
+    goBtn.disabled = false;
+    if (xhr.status === 200) {
+      barFill.style.width = '100%';
+      var blob = xhr.response;
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = prefix + '.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+      log('Done \u2014 downloaded ' + prefix + '.zip', 'ok');
+    } else {
+      // Error body is JSON even though responseType is blob; read it back.
+      var reader = new FileReader();
+      reader.onload = function () {
+        var msg = reader.result;
+        try { msg = JSON.parse(reader.result).error || msg; } catch (e) {}
+        log('Error: ' + msg, 'err');
+      };
+      reader.readAsText(xhr.response);
+    }
+  };
+  xhr.onerror = function () {
+    goBtn.disabled = false;
+    log('Error: upload failed (network or size limit).', 'err');
+  };
+
+  xhr.send(form);
+});
+</script>
+</body>
+</html>
