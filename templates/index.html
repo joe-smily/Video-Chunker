@@ -159,51 +159,29 @@ drop.addEventListener('drop', function (e) {
   if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
 });
 
-goBtn.addEventListener('click', function () {
-  if (!chosenFile) return;
-  goBtn.disabled = true;
-  logEl.innerHTML = ''; logEl.classList.add('show');
-  bar.classList.add('show'); barFill.style.width = '0';
+function fail(msg) { goBtn.disabled = false; log('Error: ' + msg, 'err'); }
 
-  var prefix = (document.getElementById('prefix').value || 'clip').trim();
-  var chunkLen = document.getElementById('chunklen').value || '10';
+function downloadBlob(blob, name) {
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
+}
 
-  var form = new FormData();
-  form.append('file', chosenFile);
-  form.append('prefix', prefix);
-  form.append('chunk_len', chunkLen);
-
+// POST to /split and treat the response as the zip (or a JSON error body).
+function requestSplit(body, isJson, prefix) {
+  log('Splitting on the server…');
   var xhr = new XMLHttpRequest();
   xhr.open('POST', 'split', true);
   xhr.responseType = 'blob';
-
-  // Upload progress (0–90% of the bar); server processing fills the rest.
-  xhr.upload.onprogress = function (e) {
-    if (e.lengthComputable) {
-      var pct = Math.round((e.loaded / e.total) * 90);
-      barFill.style.width = pct + '%';
-      if (pct < 90) log('Uploading\u2026 ' + pct + '%');
-    }
-  };
-  log('Uploading video\u2026');
-
-  xhr.onreadystatechange = function () {
-    if (xhr.readyState === xhr.HEADERS_RECEIVED) {
-      if (xhr.status === 200) log('Splitting on the server\u2026');
-    }
-  };
-
+  if (isJson) xhr.setRequestHeader('Content-Type', 'application/json');
   xhr.onload = function () {
     goBtn.disabled = false;
     if (xhr.status === 200) {
       barFill.style.width = '100%';
-      var blob = xhr.response;
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url; a.download = prefix + '.zip';
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
-      log('Done \u2014 downloaded ' + prefix + '.zip', 'ok');
+      downloadBlob(xhr.response, prefix + '.zip');
+      log('Done — downloaded ' + prefix + '.zip', 'ok');
     } else {
       // Error body is JSON even though responseType is blob; read it back.
       var reader = new FileReader();
@@ -215,12 +193,104 @@ goBtn.addEventListener('click', function () {
       reader.readAsText(xhr.response);
     }
   };
-  xhr.onerror = function () {
-    goBtn.disabled = false;
-    log('Error: upload failed (network or size limit).', 'err');
-  };
+  xhr.onerror = function () { fail('request failed (network or size limit).'); };
+  xhr.send(body);
+}
 
+// Large uploads: get a signed URL, PUT the file straight to Cloud Storage
+// (no 32 MiB request cap), then hand /split just the object name.
+function gcsFlow(prefix, chunkLen) {
+  log('Requesting an upload URL…');
+  fetch('signed-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: chosenFile.name })
+  }).then(function (r) {
+    if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+    return r.json();
+  }).then(function (info) {
+    var ct = (info.headers && info.headers['Content-Type']) || 'application/octet-stream';
+    log('Uploading video to storage…');
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', info.url, true);
+    xhr.setRequestHeader('Content-Type', ct);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) {
+        var pct = Math.round((e.loaded / e.total) * 90);
+        barFill.style.width = pct + '%';
+        if (pct < 90) log('Uploading… ' + pct + '%');
+      }
+    };
+    xhr.onload = function () {
+      if (xhr.status === 200 || xhr.status === 201) {
+        requestSplit(JSON.stringify({ object: info.object, prefix: prefix, chunk_len: chunkLen }), true, prefix);
+      } else {
+        fail('storage upload failed (HTTP ' + xhr.status + '). Check the bucket CORS config.');
+      }
+    };
+    xhr.onerror = function () { fail('storage upload failed (network or CORS). Check the bucket CORS config.'); };
+    xhr.send(chosenFile);
+  }).catch(function (err) { fail(err.message); });
+}
+
+// Fallback when no bucket is configured: multipart POST straight to /split
+// (subject to Cloud Run's 32 MiB request cap; fine locally and for small clips).
+function directFlow(prefix, chunkLen) {
+  var form = new FormData();
+  form.append('file', chosenFile);
+  form.append('prefix', prefix);
+  form.append('chunk_len', chunkLen);
+  log('Uploading video…');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'split', true);
+  xhr.responseType = 'blob';
+  xhr.upload.onprogress = function (e) {
+    if (e.lengthComputable) {
+      var pct = Math.round((e.loaded / e.total) * 90);
+      barFill.style.width = pct + '%';
+      if (pct < 90) log('Uploading… ' + pct + '%');
+    }
+  };
+  xhr.onreadystatechange = function () {
+    if (xhr.readyState === xhr.HEADERS_RECEIVED && xhr.status === 200) log('Splitting on the server…');
+  };
+  xhr.onload = function () {
+    goBtn.disabled = false;
+    if (xhr.status === 200) {
+      barFill.style.width = '100%';
+      downloadBlob(xhr.response, prefix + '.zip');
+      log('Done — downloaded ' + prefix + '.zip', 'ok');
+    } else {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var msg = reader.result;
+        try { msg = JSON.parse(reader.result).error || msg; } catch (e) {}
+        log('Error: ' + msg, 'err');
+      };
+      reader.readAsText(xhr.response);
+    }
+  };
+  xhr.onerror = function () { fail('upload failed (network or size limit).'); };
   xhr.send(form);
+}
+
+goBtn.addEventListener('click', function () {
+  if (!chosenFile) return;
+  goBtn.disabled = true;
+  logEl.innerHTML = ''; logEl.classList.add('show');
+  bar.classList.add('show'); barFill.style.width = '0';
+
+  var prefix = (document.getElementById('prefix').value || 'clip').trim();
+  var chunkLen = document.getElementById('chunklen').value || '10';
+
+  // Ask the server which upload path is available, then run it.
+  fetch('config')
+    .then(function (r) { return r.json(); })
+    .catch(function () { return {}; })
+    .then(function (cfg) {
+      if (cfg && cfg.gcs) gcsFlow(prefix, chunkLen);
+      else directFlow(prefix, chunkLen);
+    });
 });
 </script>
 </body>

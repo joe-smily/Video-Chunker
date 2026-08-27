@@ -2,38 +2,54 @@
 Video Chunker — Cloud Run service.
 
 Native ffmpeg does the splitting server-side, so it's fast (seconds, not the
-minutes ffmpeg.wasm took in the browser) and the seams are frame-perfect. The
-browser only uploads the file and downloads the resulting zip.
+minutes ffmpeg.wasm took in the browser) and the seams are frame-perfect.
+
+Uploads: Cloud Run caps an HTTP/1 request body at 32 MiB, which real videos blow
+past. So when a bucket is configured (GCS_BUCKET), the browser uploads the source
+straight to Cloud Storage via a short-lived v4 signed URL and then calls /split
+with just the object name. With no bucket configured the app falls back to a
+plain multipart POST (fine locally and for clips under 32 MiB).
+
+Downloads: the result zip is streamed back with chunked transfer encoding, which
+is exempt from Cloud Run's 32 MiB response cap, so the zip can be any size.
 
 Endpoints:
-  GET  /          -> the upload page (index.html)
-  GET  /healthz   -> health check for Cloud Run
-  POST /split     -> multipart upload (file, prefix, chunk_len); returns a zip
+  GET  /              -> the upload page (index.html)
+  GET  /config        -> {gcs: bool, max_upload_bytes: int} for the client
+  GET  /healthz       -> health check for Cloud Run
+  POST /signed-upload -> {filename} -> {url, object, ...} v4 signed PUT URL
+  POST /split         -> JSON {object, prefix, chunk_len}  (GCS flow), or
+                         multipart (file, prefix, chunk_len) (fallback); streams a zip
 
-Access is gated by Cloud Run IAM (see deploy notes), so only signed-in members
-of your Workspace domain can reach it. There is no app-level auth here on
+Access is gated by Cloud Run IAM / IAP (see the README), so only signed-in
+members of the Workspace domain can reach it. There is no app-level auth here on
 purpose — IAM is the wall, the same way the Apps Script deploy setting was.
 """
 
-import io
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 import zipfile
 from datetime import datetime, timedelta
 
-from flask import Flask, request, send_file, Response, render_template
+from flask import Flask, request, Response, render_template, jsonify
 
 from chunking import compute_chunks
 
 app = Flask(__name__)
 
-# Cap upload size so a runaway file can't exhaust the instance. 2 GB default;
-# raise if your source videos are larger (Cloud Run request bodies can be big,
-# but keep an eye on instance memory/disk).
+# Cap the fallback multipart upload so a runaway file can't exhaust the instance.
+# The GCS flow doesn't touch this (the bytes never pass through the app).
 app.config["MAX_CONTENT_LENGTH"] = int(os.environ.get("MAX_UPLOAD_BYTES", 2 * 1024 * 1024 * 1024))
+
+# When set, the browser uploads straight to this bucket via a signed URL.
+GCS_BUCKET = os.environ.get("GCS_BUCKET", "").strip()
+SIGN_TTL = timedelta(minutes=int(os.environ.get("SIGNED_URL_TTL_MIN", "15")))
+# The Content-Type the PUT is signed with; the browser must send exactly this.
+_UPLOAD_CT = "application/octet-stream"
 
 # A safe filename prefix: letters, numbers, dash, underscore only.
 _SAFE_PREFIX = re.compile(r"[^A-Za-z0-9_-]")
@@ -42,6 +58,65 @@ _SAFE_PREFIX = re.compile(r"[^A-Za-z0-9_-]")
 def safe_prefix(raw: str) -> str:
     p = _SAFE_PREFIX.sub("", (raw or "").strip()) or "clip"
     return p[:60]
+
+
+def parse_chunk_len(raw) -> float:
+    try:
+        v = float(raw if raw not in (None, "") else 10)
+        return v if v > 0 else 10.0
+    except (TypeError, ValueError):
+        return 10.0
+
+
+# --- Cloud Storage helpers -------------------------------------------------
+
+_gcs_client = None
+
+
+def _bucket():
+    global _gcs_client
+    if not GCS_BUCKET:
+        raise RuntimeError("GCS_BUCKET is not set")
+    if _gcs_client is None:
+        from google.cloud import storage  # lazy: not needed for the fallback path
+        _gcs_client = storage.Client()
+    return _gcs_client.bucket(GCS_BUCKET)
+
+
+def _metadata(path: str) -> str:
+    import urllib.request
+    req = urllib.request.Request(
+        f"http://metadata.google.internal/computeMetadata/v1/{path}",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(req, timeout=2) as r:
+        return r.read().decode()
+
+
+def signed_put_url(blob) -> str:
+    """A v4 signed PUT URL for `blob`.
+
+    Locally, GOOGLE_APPLICATION_CREDENTIALS points at a key file that can sign
+    directly. On Cloud Run there is no key, so we sign through the IAM signBlob
+    API using the runtime service account's own access token — which needs
+    roles/iam.serviceAccountTokenCreator on that service account (see README).
+    """
+    common = dict(version="v4", expiration=SIGN_TTL, method="PUT", content_type=_UPLOAD_CT)
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        return blob.generate_signed_url(**common)
+
+    import google.auth
+    import google.auth.transport.requests as greq
+
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    creds.refresh(greq.Request())
+    email = getattr(creds, "service_account_email", "") or ""
+    if not email or email == "default":
+        email = _metadata("instance/service-accounts/default/email")
+    return blob.generate_signed_url(service_account_email=email, access_token=creds.token, **common)
+
+
+# --- ffmpeg --------------------------------------------------------------------
 
 
 def ffprobe_duration(path: str) -> float:
@@ -88,9 +163,17 @@ def split_video(src_path: str, prefix: str, chunk_len: float, out_dir: str):
     return produced
 
 
+# --- routes -----------------------------------------------------------------
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
+
+
+@app.get("/config")
+def config():
+    return jsonify(gcs=bool(GCS_BUCKET), max_upload_bytes=app.config["MAX_CONTENT_LENGTH"])
 
 
 @app.get("/healthz")
@@ -98,26 +181,59 @@ def healthz():
     return "ok", 200
 
 
+@app.post("/signed-upload")
+def signed_upload():
+    if not GCS_BUCKET:
+        return {"error": "Direct upload is not configured (no GCS_BUCKET)."}, 501
+
+    data = request.get_json(silent=True) or {}
+    ext = os.path.splitext(data.get("filename") or "")[1].lower()
+    if not re.fullmatch(r"\.[a-z0-9]{1,5}", ext or ""):
+        ext = ".mp4"
+    obj = f"uploads/{uuid.uuid4().hex}/input{ext}"
+
+    try:
+        url = signed_put_url(_bucket().blob(obj))
+    except Exception as e:  # signing / permissions / bucket problems
+        return {"error": "Could not create an upload URL.", "detail": str(e)[:300]}, 500
+
+    return jsonify(
+        url=url, object=obj, method="PUT",
+        headers={"Content-Type": _UPLOAD_CT},
+        expires_in=int(SIGN_TTL.total_seconds()),
+    )
+
+
 @app.post("/split")
 def split():
-    f = request.files.get("file")
-    if not f or not f.filename:
-        return {"error": "No file uploaded."}, 400
+    payload = request.get_json(silent=True) if request.is_json else None
+    gcs_object = (payload or {}).get("object")
 
-    prefix = safe_prefix(request.form.get("prefix", "clip"))
-    try:
-        chunk_len = float(request.form.get("chunk_len", "10") or "10")
-        if chunk_len <= 0:
-            chunk_len = 10.0
-    except ValueError:
-        chunk_len = 10.0
+    src = payload if payload is not None else request.form
+    prefix = safe_prefix(src.get("prefix", "clip"))
+    chunk_len = parse_chunk_len(src.get("chunk_len"))
 
     work = tempfile.mkdtemp(prefix="chunk_")
+    streaming = False
     try:
-        # Keep the original extension so ffmpeg picks the right demuxer.
-        src_ext = os.path.splitext(f.filename)[1].lower() or ".mp4"
-        src_path = os.path.join(work, "input" + src_ext)
-        f.save(src_path)
+        cleanup_blob = None
+        if gcs_object:
+            if not GCS_BUCKET:
+                return {"error": "Direct upload is not configured."}, 501
+            src_blob = _bucket().blob(gcs_object)
+            if not src_blob.exists():
+                return {"error": "Upload not found — it may have expired. Try again."}, 404
+            src_ext = os.path.splitext(gcs_object)[1].lower() or ".mp4"
+            src_path = os.path.join(work, "input" + src_ext)
+            src_blob.download_to_filename(src_path)
+            cleanup_blob = src_blob
+        else:
+            f = request.files.get("file")
+            if not f or not f.filename:
+                return {"error": "No file uploaded."}, 400
+            src_ext = os.path.splitext(f.filename)[1].lower() or ".mp4"
+            src_path = os.path.join(work, "input" + src_ext)
+            f.save(src_path)
 
         out_dir = os.path.join(work, "out")
         os.makedirs(out_dir, exist_ok=True)
@@ -128,23 +244,43 @@ def split():
             msg = (e.stderr or b"").decode("utf-8", "replace")[-800:]
             return {"error": "ffmpeg failed", "detail": msg}, 500
 
-        # Build the zip in memory, staggering modified-times by one minute per
-        # chunk so date-modified order matches chunk order (e.g. iOS AirDrop).
-        mem = io.BytesIO()
+        # Build the zip on disk (keeps instance memory flat for big outputs),
+        # staggering modified-times by one minute per chunk so date-modified
+        # order matches chunk order (e.g. iOS AirDrop).
+        zip_path = os.path.join(work, f"{prefix}.zip")
         base_time = datetime.now() - timedelta(minutes=len(produced))
-        with zipfile.ZipFile(mem, "w", zipfile.ZIP_STORED) as z:
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED) as z:
             for i, (name, path) in enumerate(produced):
-                dt = base_time + timedelta(minutes=i)
-                zinfo = zipfile.ZipInfo(name, date_time=dt.timetuple()[:6])
-                with open(path, "rb") as fh:
-                    z.writestr(zinfo, fh.read())
-        mem.seek(0)
-        return send_file(
-            mem, mimetype="application/zip",
-            as_attachment=True, download_name=f"{prefix}.zip",
-        )
+                ts = (base_time + timedelta(minutes=i)).timestamp()
+                os.utime(path, (ts, ts))
+                z.write(path, arcname=name)
+
+        # Stream it back. Chunked transfer encoding is exempt from Cloud Run's
+        # 32 MiB HTTP/1 response cap, so the zip can be any size. Cleanup rides
+        # on the generator finishing (or the client hanging up).
+        def _stream():
+            try:
+                with open(zip_path, "rb") as fh:
+                    while True:
+                        block = fh.read(1024 * 1024)
+                        if not block:
+                            break
+                        yield block
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+                if cleanup_blob is not None:
+                    try:
+                        cleanup_blob.delete()
+                    except Exception:
+                        pass
+
+        resp = Response(_stream(), mimetype="application/zip")
+        resp.headers["Content-Disposition"] = f'attachment; filename="{prefix}.zip"'
+        streaming = True
+        return resp
     finally:
-        shutil.rmtree(work, ignore_errors=True)
+        if not streaming:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":
