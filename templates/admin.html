@@ -88,7 +88,7 @@
   <header>
     <div class="header-top">
       <div class="header-title">Video Chunker — Admin</div>
-      <a href="./">← Back to splitter</a>
+      <a href="/">← Back to splitter</a>
     </div>
   </header>
 
@@ -181,7 +181,7 @@ gateEnter.addEventListener('click', function () {
 function loadHashes() {
   listArea.innerHTML = '<div class="msg">Loading…</div>';
   countEl.textContent = '—';
-  fetch('hashes').then(function (r) {
+  fetch('/admin/hashes').then(function (r) {
     return r.json().then(function (j) { return { ok: r.ok, body: j }; });
   }).then(function (res) {
     if (!res.ok) {
@@ -260,7 +260,7 @@ function openRemove(index, digest) {
   go.addEventListener('click', function () {
     if (!confirm('Last check — permanently remove position #' + (index + 1) + ' from the list?')) return;
     go.disabled = true; go.textContent = 'Removing…';
-    fetch('remove', {
+    fetch('/admin/remove', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index: index, digest: digest })
@@ -293,7 +293,7 @@ checkGo.addEventListener('click', function () {
   checkResult.innerHTML = '';
   checkBar.classList.add('show'); checkBarFill.style.width = '0';
 
-  fetch('../config').then(function (r) { return r.json(); }).catch(function () { return {}; })
+  fetch('/config').then(function (r) { return r.json(); }).catch(function () { return {}; })
     .then(function (cfg) {
       if (cfg && cfg.gcs) checkViaGcs(f);
       else checkViaMultipart(f);
@@ -316,7 +316,7 @@ function checkViaMultipart(f) {
   var form = new FormData();
   form.append('file', f);
   var xhr = new XMLHttpRequest();
-  xhr.open('POST', 'check', true);
+  xhr.open('POST', '/admin/check', true);
   xhr.upload.onprogress = function (e) {
     if (e.lengthComputable) checkBarFill.style.width = Math.round((e.loaded / e.total) * 100) + '%';
   };
@@ -329,7 +329,7 @@ function checkViaMultipart(f) {
 }
 
 function checkViaGcs(f) {
-  fetch('../signed-upload', {
+  fetch('/signed-upload', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ filename: f.name })
   }).then(function (r) {
@@ -345,7 +345,7 @@ function checkViaGcs(f) {
     };
     xhr.onload = function () {
       if (xhr.status === 200 || xhr.status === 201) {
-        fetch('check', {
+        fetch('/admin/check', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ object: info.object })
         }).then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })

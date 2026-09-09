@@ -92,7 +92,7 @@
   <header>
     <div class="header-top">
       <div class="header-title">Video Chunker</div>
-      <a href="admin">Admin</a>
+      <a href="/admin" target="_blank" rel="noopener">Admin</a>
     </div>
   </header>
 
@@ -190,7 +190,15 @@ drop.addEventListener('drop', function (e) {
   if (e.dataTransfer.files && e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]);
 });
 
-function fail(msg) { goBtn.disabled = false; log('Error: ' + msg, 'err'); }
+// True while a /split request is outstanding. The split runs on the server and
+// its result (the zip) is delivered to *this* page's request — navigating away
+// aborts it — so warn before leaving, and open the Admin link in a new tab.
+var splitInFlight = false;
+window.addEventListener('beforeunload', function (e) {
+  if (splitInFlight) { e.preventDefault(); e.returnValue = ''; }
+});
+
+function fail(msg) { splitInFlight = false; goBtn.disabled = false; log('Error: ' + msg, 'err'); }
 
 function downloadBlob(blob, name) {
   var url = URL.createObjectURL(blob);
@@ -209,6 +217,7 @@ var pendingResend = null;  // re-runs the split with force=1 ("Split anyway")
 function hideDup() { dup.hidden = true; pendingResend = null; }
 
 function showDup(msg, resend) {
+  splitInFlight = false;
   pendingResend = resend;
   dupMsg.textContent = msg || 'This looks like a duplicate of a recent production video.';
   dup.hidden = false;
@@ -228,6 +237,7 @@ dupCancel.addEventListener('click', function () {
 // Handle a finished /split request. `resend` re-runs it with force=1, wired to
 // the "Split anyway" button when the server flags a duplicate (HTTP 409).
 function handleSplitDone(xhr, prefix, resend) {
+  splitInFlight = false;
   goBtn.disabled = false;
   if (xhr.status === 200) {
     barFill.style.width = '100%';
@@ -343,6 +353,7 @@ function directFlow(prefix, chunkLen, production, force) {
 goBtn.addEventListener('click', function () {
   if (!chosenFile) return;
   hideDup();
+  splitInFlight = true;
   goBtn.disabled = true;
   logEl.innerHTML = ''; logEl.classList.add('show');
   bar.classList.add('show'); barFill.style.width = '0';
