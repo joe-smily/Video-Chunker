@@ -335,6 +335,88 @@ def split():
             shutil.rmtree(work, ignore_errors=True)
 
 
+# --- break-glass admin ----------------------------------------------------------
+#
+# No app-level auth: IAP already gates the whole service to the Workspace domain
+# and there is effectively one operator. The friction here is deliberate
+# confirmation UI (see admin.html), not a second credential. These routes only
+# read and prune hashes.json; they never run ffmpeg.
+
+
+@app.get("/admin")
+def admin_page():
+    return render_template("admin.html")
+
+
+@app.get("/admin/hashes")
+def admin_hashes():
+    try:
+        lst = hashes.snapshot()
+    except Exception as e:
+        return {"error": f"hash store unreachable: {str(e)[:200]}"}, 502
+    return jsonify(hashes=lst, count=len(lst), max=hashes._MAX)
+
+
+@app.post("/admin/check")
+def admin_check():
+    """Fingerprint an uploaded video and report whether it is already in the
+    list. Reads only — never records or removes. Same dual input as /split."""
+    payload = request.get_json(silent=True) if request.is_json else None
+    gcs_object = (payload or {}).get("object")
+
+    work = tempfile.mkdtemp(prefix="check_")
+    try:
+        cleanup_blob = None
+        if gcs_object:
+            if not GCS_BUCKET:
+                return {"error": "Direct upload is not configured."}, 501
+            src_blob = _bucket().blob(gcs_object)
+            if not src_blob.exists():
+                return {"error": "Upload not found — it may have expired. Try again."}, 404
+            src_path = os.path.join(work, "input")
+            src_blob.download_to_filename(src_path)
+            cleanup_blob = src_blob
+        else:
+            f = request.files.get("file")
+            if not f or not f.filename:
+                return {"error": "No file uploaded."}, 400
+            src_path = os.path.join(work, "input")
+            f.save(src_path)
+
+        digest = hashes.sha256_file(src_path)
+        if cleanup_blob is not None:
+            try:
+                cleanup_blob.delete()
+            except Exception:
+                pass
+
+        try:
+            lst = hashes.snapshot()
+        except Exception as e:
+            return {"error": f"hash store unreachable: {str(e)[:200]}", "digest": digest}, 502
+
+        idx = lst.index(digest) if digest in lst else None
+        return jsonify(digest=digest, in_list=idx is not None, index=idx, count=len(lst))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+@app.post("/admin/remove")
+def admin_remove():
+    data = request.get_json(silent=True) or {}
+    digest = data.get("digest")
+    index = data.get("index")
+    if not isinstance(digest, str) or not isinstance(index, int):
+        return {"error": "Send {index:int, digest:str}."}, 400
+    try:
+        lst = hashes.remove_at(index, digest)
+    except ValueError:
+        return {"error": "The list changed since you loaded it — refresh and try again."}, 409
+    except Exception as e:
+        return {"error": f"hash store unreachable: {str(e)[:200]}"}, 502
+    return jsonify(hashes=lst, count=len(lst), removed=1)
+
+
 if __name__ == "__main__":
     # Cloud Run provides PORT; default 8080 for local runs.
     port = int(os.environ.get("PORT", 8080))

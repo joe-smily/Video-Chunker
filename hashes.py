@@ -67,6 +67,38 @@ def is_duplicate(digest: str) -> bool:
         return False
 
 
+# --- operator / admin helpers --------------------------------------------------
+#
+# Unlike the functions above, these do NOT swallow store errors: the break-glass
+# admin panel needs to tell "the list is empty" apart from "the bucket is
+# unreachable", and a failed removal must surface rather than pass silently.
+
+
+def snapshot() -> list:
+    """The stored list, newest first. Returns [] if the object does not exist;
+    raises if the bucket is unreachable or GCS_BUCKET is unset."""
+    blob = _blob()
+    if not blob.exists():
+        return []
+    data = json.loads(blob.download_as_bytes())
+    if isinstance(data, list):
+        return [x for x in data if isinstance(x, str)]
+    return []
+
+
+def remove_at(index: int, expected_digest: str) -> list:
+    """Delete one entry by position, but only if it still holds `expected_digest`
+    (guards against a concurrent add_hash having shifted the list). Raises
+    ValueError('stale') on a mismatch, or the underlying error on store failure.
+    Returns the new list."""
+    current = snapshot()
+    if not (0 <= index < len(current)) or current[index] != expected_digest:
+        raise ValueError("stale")
+    del current[index]
+    _blob().upload_from_string(json.dumps(current), content_type="application/json")
+    return current
+
+
 def add_hash(digest: str) -> None:
     """Prepend `digest`, trim to the newest 30, write back. Best-effort."""
     try:

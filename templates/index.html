@@ -21,6 +21,8 @@
     header { background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 40; }
     .header-top { padding: 0 16px; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .header-title { font-size: 16px; font-weight: 700; white-space: nowrap; }
+    .header-top a { font-size: 13px; color: var(--muted); text-decoration: none; }
+    .header-top a:hover { color: var(--text); }
     @media (min-width: 640px) { .header-top { padding: 0 24px; } }
     main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
     @media (min-width: 640px) { main { padding: 28px 24px; } }
@@ -90,6 +92,7 @@
   <header>
     <div class="header-top">
       <div class="header-title">Video Chunker</div>
+      <a href="admin">Admin</a>
     </div>
   </header>
 

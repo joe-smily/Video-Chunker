@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no" />
+  <title>Video Chunker — Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #f4f4f5; --surface: #ffffff; --border: #e4e4e7; --text: #18181b;
+      --muted: #71717a; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a;
+      --radius: 8px; --field-bg: #f4f4f5;
+    }
+    body { font-family: 'Roboto', sans-serif; background: var(--bg); color: var(--text); font-size: 16px; line-height: 1.5; min-height: 100vh; }
+    html, body { width: 100%; overflow-x: hidden; }
+    header { background: var(--surface); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 40; }
+    .header-top { padding: 0 16px; height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .header-title { font-size: 16px; font-weight: 700; white-space: nowrap; }
+    .header-top a { font-size: 13px; color: var(--muted); text-decoration: none; }
+    .header-top a:hover { color: var(--text); }
+    @media (min-width: 640px) { .header-top { padding: 0 24px; } }
+    main { max-width: 720px; margin: 0 auto; padding: 20px 16px; }
+    @media (min-width: 640px) { main { padding: 28px 24px; } }
+    .page-header { margin-bottom: 20px; }
+    .page-title { font-size: 20px; font-weight: 700; }
+    .page-sub { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    @media (min-width: 640px) { .card { padding: 20px 24px; } }
+    .card h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; font-weight: 700; }
+    .card .hint { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+    .btn {
+      font-family: 'Roboto', sans-serif; font-size: 15px; font-weight: 500; padding: 10px 18px; border-radius: var(--radius);
+      border: 1px solid transparent; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+      display: inline-flex; align-items: center; justify-content: center; min-height: 44px; width: 100%;
+    }
+    .btn-primary { background: var(--text); color: #fff; border-color: var(--text); }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+    .btn-danger:hover { opacity: 0.9; }
+    .btn-ghost { background: transparent; color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { background: var(--field-bg); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .row-actions { display: flex; gap: 10px; }
+    .row-actions .btn { width: auto; flex: 1; }
+    .check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; margin: 14px 0; }
+    .check input { width: 18px; height: 18px; margin: 2px 0 0; flex: none; accent-color: var(--accent); }
+    .check span { font-size: 14px; }
+
+    /* Entry gate */
+    .gate { border-color: #fca5a5; }
+    .gate .warnhead { font-size: 15px; font-weight: 700; color: #b91c1c; margin-bottom: 8px; }
+    .gate p { font-size: 14px; color: var(--text); margin-bottom: 6px; }
+
+    /* Hash list */
+    .hlist { list-style: none; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .hlist li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-top: 1px solid var(--border); }
+    .hlist li:first-child { border-top: none; }
+    .hlist .pos { font-size: 12px; color: var(--muted); width: 34px; flex: none; text-align: right; }
+    .hlist .dig { font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; flex: 1; cursor: copy; }
+    .hlist .dig:hover { color: var(--accent); }
+    .hlist .rm { flex: none; width: auto; min-height: 0; padding: 6px 12px; font-size: 13px; }
+    .listmeta { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .listmeta .count { font-size: 13px; color: var(--muted); }
+    .listmeta .btn { width: auto; min-height: 0; padding: 6px 12px; font-size: 13px; }
+    .msg { font-size: 13px; padding: 12px; border-radius: var(--radius); background: var(--field-bg); color: var(--muted); }
+    .msg.err { background: #fef2f2; color: #b91c1c; }
+    .result { font-size: 14px; margin-top: 12px; padding: 12px; border-radius: var(--radius); }
+    .result.ok { background: #f0fdf4; color: #15803d; }
+    .result.dup { background: #fffbeb; color: #92400e; }
+    .filepick { font-size: 14px; }
+    .filepick input { display: block; margin-top: 8px; font-size: 13px; }
+    .bar { height: 6px; background: var(--field-bg); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; margin-top: 12px; display: none; }
+    .bar.show { display: block; }
+    .bar > div { height: 100%; width: 0; background: var(--text); transition: width 0.2s; }
+
+    /* Modal */
+    .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 100; }
+    .modal { background: var(--surface); border-radius: 12px; padding: 20px; max-width: 440px; width: 100%; }
+    .modal h3 { font-size: 16px; font-weight: 700; color: #b91c1c; margin-bottom: 10px; }
+    .modal p { font-size: 13px; margin-bottom: 8px; }
+    .modal .dig { font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; background: var(--field-bg); padding: 8px; border-radius: 6px; }
+    .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--text); color: #fff; font-size: 13px; padding: 10px 16px; border-radius: 8px; z-index: 200; max-width: 90%; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-top">
+      <div class="header-title">Video Chunker — Admin</div>
+      <a href="./">← Back to splitter</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="page-header">
+      <div class="page-title">Break-glass admin</div>
+      <div class="page-sub">Direct read/prune access to the production duplicate-detection list.</div>
+    </div>
+
+    <!-- Entry gate -->
+    <div id="gate" class="card gate">
+      <div class="warnhead">⚠ You are about to open the admin panel</div>
+      <p>This panel reads and <strong>permanently deletes</strong> entries from the live
+         <code>hashes.json</code> that powers the "duplicate production video" warning.</p>
+      <p>Changes take effect immediately, apply to everyone, and cannot be undone.</p>
+      <label class="check">
+        <input id="gateAgree" type="checkbox">
+        <span>I understand this edits live data and I mean to do it.</span>
+      </label>
+      <div class="row-actions">
+        <button class="btn btn-danger" id="gateEnter" disabled>Enter admin panel</button>
+        <button class="btn btn-ghost" id="gateBack">Go back</button>
+      </div>
+    </div>
+
+    <!-- Panel (revealed after the gate) -->
+    <div id="panel" hidden>
+      <div class="card">
+        <h2>Recent production hashes</h2>
+        <div class="hint">Newest first. Position 1 was the most recent production split.</div>
+        <div class="listmeta">
+          <span class="count" id="count">—</span>
+          <button class="btn btn-ghost" id="refresh">Refresh</button>
+        </div>
+        <div id="listArea"></div>
+      </div>
+
+      <div class="card">
+        <h2>Check a video</h2>
+        <div class="hint">Fingerprints the file and tells you if it's already in the list. Does not split, does not record.</div>
+        <div class="filepick">
+          Pick a video:
+          <input id="checkFile" type="file" accept="video/*">
+        </div>
+        <button class="btn btn-primary" id="checkGo" disabled style="margin-top:14px">Check this file</button>
+        <div id="checkBar" class="bar"><div id="checkBarFill"></div></div>
+        <div id="checkResult"></div>
+      </div>
+    </div>
+  </main>
+
+<script>
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+var gate = document.getElementById('gate');
+var gateAgree = document.getElementById('gateAgree');
+var gateEnter = document.getElementById('gateEnter');
+var gateBack = document.getElementById('gateBack');
+var panel = document.getElementById('panel');
+var listArea = document.getElementById('listArea');
+var countEl = document.getElementById('count');
+var refreshBtn = document.getElementById('refresh');
+var checkFile = document.getElementById('checkFile');
+var checkGo = document.getElementById('checkGo');
+var checkBar = document.getElementById('checkBar');
+var checkBarFill = document.getElementById('checkBarFill');
+var checkResult = document.getElementById('checkResult');
+
+var currentHashes = [];
+
+function toast(msg) {
+  var t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function () { t.remove(); }, 3500);
+}
+
+/* ---- entry gate ---- */
+gateAgree.addEventListener('change', function () { gateEnter.disabled = !gateAgree.checked; });
+gateBack.addEventListener('click', function () { window.location.href = './'; });
+gateEnter.addEventListener('click', function () {
+  if (!confirm('Open the break-glass admin panel?\n\nYou will be able to permanently delete entries from the live duplicate-detection list.')) return;
+  gate.hidden = true;
+  panel.hidden = false;
+  loadHashes();
+});
+
+/* ---- hash list ---- */
+function loadHashes() {
+  listArea.innerHTML = '<div class="msg">Loading…</div>';
+  countEl.textContent = '—';
+  fetch('hashes').then(function (r) {
+    return r.json().then(function (j) { return { ok: r.ok, body: j }; });
+  }).then(function (res) {
+    if (!res.ok) {
+      listArea.innerHTML = '<div class="msg err">' + esc(res.body.error || 'Could not load the list.') + '</div>';
+      return;
+    }
+    currentHashes = res.body.hashes || [];
+    countEl.textContent = res.body.count + ' / ' + res.body.max;
+    render();
+  }).catch(function () {
+    listArea.innerHTML = '<div class="msg err">Network error loading the list.</div>';
+  });
+}
+
+function render() {
+  if (!currentHashes.length) {
+    listArea.innerHTML = '<div class="msg">The list is empty.</div>';
+    return;
+  }
+  var ul = document.createElement('ul');
+  ul.className = 'hlist';
+  currentHashes.forEach(function (h, i) {
+    var li = document.createElement('li');
+    li.dataset.index = i;
+
+    var pos = document.createElement('span');
+    pos.className = 'pos';
+    pos.textContent = '#' + (i + 1);
+
+    var dig = document.createElement('span');
+    dig.className = 'dig';
+    dig.textContent = h;
+    dig.title = 'Click to copy';
+    dig.addEventListener('click', function () {
+      navigator.clipboard && navigator.clipboard.writeText(h);
+      toast('Digest copied');
+    });
+
+    var rm = document.createElement('button');
+    rm.className = 'btn btn-ghost rm';
+    rm.textContent = 'Remove';
+    rm.addEventListener('click', function () { openRemove(i, h); });
+
+    li.appendChild(pos); li.appendChild(dig); li.appendChild(rm);
+    ul.appendChild(li);
+  });
+  listArea.innerHTML = '';
+  listArea.appendChild(ul);
+}
+
+refreshBtn.addEventListener('click', loadHashes);
+
+/* ---- per-row remove, multi-step confirm ---- */
+function openRemove(index, digest) {
+  var bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML =
+    '<div class="modal">' +
+      '<h3>Remove this hash?</h3>' +
+      '<p>Position <strong>#' + (index + 1) + '</strong> of ' + currentHashes.length + '.</p>' +
+      '<div class="dig">' + esc(digest) + '</div>' +
+      '<p style="margin-top:10px">After this, the next upload of this exact file will <strong>not</strong> be flagged as a duplicate. This cannot be undone.</p>' +
+      '<label class="check"><input type="checkbox" id="rmAgree"><span>Yes, permanently remove this hash.</span></label>' +
+      '<div class="row-actions">' +
+        '<button class="btn btn-danger" id="rmGo" disabled>Remove hash</button>' +
+        '<button class="btn btn-ghost" id="rmCancel">Cancel</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(bg);
+  var agree = bg.querySelector('#rmAgree');
+  var go = bg.querySelector('#rmGo');
+  var cancel = bg.querySelector('#rmCancel');
+  agree.addEventListener('change', function () { go.disabled = !agree.checked; });
+  cancel.addEventListener('click', function () { bg.remove(); });
+  bg.addEventListener('click', function (e) { if (e.target === bg) bg.remove(); });
+  go.addEventListener('click', function () {
+    if (!confirm('Last check — permanently remove position #' + (index + 1) + ' from the list?')) return;
+    go.disabled = true; go.textContent = 'Removing…';
+    fetch('remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index: index, digest: digest })
+    }).then(function (r) {
+      return r.json().then(function (j) { return { status: r.status, body: j }; });
+    }).then(function (res) {
+      bg.remove();
+      if (res.status === 200) {
+        currentHashes = res.body.hashes || [];
+        countEl.textContent = res.body.count + ' / ' + (res.body.max || 30);
+        render();
+        toast('Removed. List is now ' + res.body.count + ' entr' + (res.body.count === 1 ? 'y' : 'ies') + '.');
+      } else if (res.status === 409) {
+        toast(res.body.error || 'List changed — reloading.');
+        loadHashes();
+      } else {
+        toast(res.body.error || 'Remove failed.');
+      }
+    }).catch(function () { bg.remove(); toast('Network error during remove.'); });
+  });
+}
+
+/* ---- check a video ---- */
+checkFile.addEventListener('change', function () { checkGo.disabled = !checkFile.files[0]; });
+
+checkGo.addEventListener('click', function () {
+  var f = checkFile.files[0];
+  if (!f) return;
+  checkGo.disabled = true;
+  checkResult.innerHTML = '';
+  checkBar.classList.add('show'); checkBarFill.style.width = '0';
+
+  fetch('../config').then(function (r) { return r.json(); }).catch(function () { return {}; })
+    .then(function (cfg) {
+      if (cfg && cfg.gcs) checkViaGcs(f);
+      else checkViaMultipart(f);
+    });
+});
+
+function showCheckResult(res) {
+  checkGo.disabled = false;
+  if (res.error) { checkResult.innerHTML = '<div class="result dup">' + esc(res.error) + '</div>'; return; }
+  if (res.in_list) {
+    checkResult.innerHTML = '<div class="result dup">⚠ In the list at position #' + (res.index + 1) + ' of ' + res.count + '.</div>';
+    var li = listArea.querySelector('li[data-index="' + res.index + '"]');
+    if (li) { li.style.outline = '2px solid #f59e0b'; li.scrollIntoView({ block: 'center' }); }
+  } else {
+    checkResult.innerHTML = '<div class="result ok">✓ Not in the list — this file has not been split as production recently.</div>';
+  }
+}
+
+function checkViaMultipart(f) {
+  var form = new FormData();
+  form.append('file', f);
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'check', true);
+  xhr.upload.onprogress = function (e) {
+    if (e.lengthComputable) checkBarFill.style.width = Math.round((e.loaded / e.total) * 100) + '%';
+  };
+  xhr.onload = function () {
+    try { showCheckResult(JSON.parse(xhr.responseText)); }
+    catch (e) { checkGo.disabled = false; checkResult.innerHTML = '<div class="result dup">Bad response (HTTP ' + xhr.status + ').</div>'; }
+  };
+  xhr.onerror = function () { checkGo.disabled = false; checkResult.innerHTML = '<div class="result dup">Upload failed.</div>'; };
+  xhr.send(form);
+}
+
+function checkViaGcs(f) {
+  fetch('../signed-upload', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename: f.name })
+  }).then(function (r) {
+    if (!r.ok) return r.json().then(function (j) { throw new Error(j.error || ('HTTP ' + r.status)); });
+    return r.json();
+  }).then(function (info) {
+    var ct = (info.headers && info.headers['Content-Type']) || 'application/octet-stream';
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', info.url, true);
+    xhr.setRequestHeader('Content-Type', ct);
+    xhr.upload.onprogress = function (e) {
+      if (e.lengthComputable) checkBarFill.style.width = Math.round((e.loaded / e.total) * 90) + '%';
+    };
+    xhr.onload = function () {
+      if (xhr.status === 200 || xhr.status === 201) {
+        fetch('check', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ object: info.object })
+        }).then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })
+          .then(showCheckResult)
+          .catch(function () { checkGo.disabled = false; checkResult.innerHTML = '<div class="result dup">Check failed.</div>'; });
+      } else {
+        checkGo.disabled = false;
+        checkResult.innerHTML = '<div class="result dup">Storage upload failed (HTTP ' + xhr.status + ').</div>';
+      }
+    };
+    xhr.onerror = function () { checkGo.disabled = false; checkResult.innerHTML = '<div class="result dup">Storage upload failed (network or CORS).</div>'; };
+    xhr.send(f);
+  }).catch(function (err) { checkGo.disabled = false; checkResult.innerHTML = '<div class="result dup">' + esc(err.message) + '</div>'; });
+}
+</script>
+</body>
+</html>

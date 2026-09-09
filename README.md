@@ -18,6 +18,7 @@ matching 32 MiB response limit, so it can be any size.
 | `chunking.py` | Chunk-boundary rule (10s chunks; remainder ≤5s merges, ≥6s splits off) |
 | `hashes.py` | Recent-upload fingerprint store (`hashes.json` in the bucket) for the duplicate warning |
 | `templates/index.html` | Upload page served at `/` |
+| `templates/admin.html` | Break-glass admin page served at `/admin` |
 | `Dockerfile` | `python:3.12-slim` + `ffmpeg`, served by gunicorn |
 | `requirements.txt` | Flask, gunicorn, google-cloud-storage |
 
@@ -46,6 +47,28 @@ errors, so if the bucket or object is unreachable the check is silently skipped
 and the split proceeds. The feature can never block or fail a split. No new env
 var — it reuses `GCS_BUCKET` and the app's storage client. (With no bucket
 configured, e.g. local runs, the check is simply inert.)
+
+## Admin panel (break-glass)
+
+`GET /admin` serves a small operator page for reaching into that hash list:
+
+- **View** the current entries (`#1` = newest), with a live `N / 30` count.
+- **Check a video** — upload it and get "in the list at position #k" or "not in
+  the list", without splitting and without recording anything.
+- **Remove** one entry at a time.
+
+It has **no separate auth** — IAP already limits the whole service to the
+Workspace domain and there is effectively one operator, so IAP is the gate. In
+its place the page adds deliberate friction: an "are you sure you want to enter"
+checkbox + confirm on the way in, and a spelled-out checkbox + double confirm on
+every removal. There is no "clear all".
+
+Endpoints (all behind the same IAP wall as the rest of the app):
+
+- `GET /admin` — the page
+- `GET /admin/hashes` — `{hashes, count, max}`; `502 {error}` if the store is unreachable
+- `POST /admin/check` — JSON `{object}` or multipart `file`; returns `{digest, in_list, index, count}`. Read-only.
+- `POST /admin/remove` — JSON `{index, digest}`. Re-reads and requires the digest to still sit at that index (a concurrent split can shift the list); mismatch → `409`, so a stale click fails loudly instead of deleting the wrong row.
 
 ## Access model
 
