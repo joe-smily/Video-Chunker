@@ -19,7 +19,10 @@ Endpoints:
   GET  /healthz       -> health check for Cloud Run
   POST /signed-upload -> {filename} -> {url, object, ...} v4 signed PUT URL
   POST /split         -> JSON {object, prefix, chunk_len}  (GCS flow), or
-                         multipart (file, prefix, chunk_len) (fallback); streams a zip
+                         multipart (file, prefix, chunk_len) (fallback); streams a zip.
+                         A "production" flag (default on) fingerprints the source
+                         (SHA-256) and returns 409 {duplicate:true} if it matches
+                         a recently split file; resend with force=1 to split anyway.
 
 Access is gated by Cloud Run IAM / IAP (see the README), so only signed-in
 members of the Workspace domain can reach it. There is no app-level auth here on
@@ -37,6 +40,7 @@ from datetime import datetime, timedelta
 
 from flask import Flask, request, Response, render_template, jsonify
 
+import hashes
 from chunking import compute_chunks
 
 app = Flask(__name__)
@@ -66,6 +70,15 @@ def parse_chunk_len(raw) -> float:
         return v if v > 0 else 10.0
     except (TypeError, ValueError):
         return 10.0
+
+
+def parse_flag(raw, default: bool) -> bool:
+    """Read a checkbox-ish value from JSON (bool / 1 / 0) or a form (string)."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 # --- Cloud Storage helpers -------------------------------------------------
@@ -163,6 +176,36 @@ def split_video(src_path: str, prefix: str, chunk_len: float, out_dir: str):
     return produced
 
 
+# --- production-file dedupe -------------------------------------------------
+
+
+def dedupe_guard(src_path: str, production: bool, force: bool):
+    """Warn on a byte-for-byte repeat of a recent production video.
+
+    Runs for both the GCS-object path and the multipart fallback — the caller
+    passes the source once it is on local disk. Returns a Flask (body, status)
+    tuple to BLOCK the split with a 409, or None to let it proceed.
+
+    Fail-safe: any trouble fingerprinting or reaching the hash store just means
+    "proceed". This must never block or fail a split.
+    """
+    if not production:
+        return None
+    try:
+        digest = hashes.sha256_file(src_path)
+    except Exception:
+        return None  # can't fingerprint -> stay out of the way
+    if not force and hashes.is_duplicate(digest):
+        return jsonify(
+            duplicate=True,
+            message="This is a byte-for-byte match of a recently split "
+                    "production video. Split anyway?",
+        ), 409
+    # Not a duplicate, or the user chose "Split anyway": record it and proceed.
+    hashes.add_hash(digest)
+    return None
+
+
 # --- routes -----------------------------------------------------------------
 
 
@@ -212,6 +255,8 @@ def split():
     src = payload if payload is not None else request.form
     prefix = safe_prefix(src.get("prefix", "clip"))
     chunk_len = parse_chunk_len(src.get("chunk_len"))
+    production = parse_flag(src.get("production"), True)
+    force = parse_flag(src.get("force"), False)
 
     work = tempfile.mkdtemp(prefix="chunk_")
     streaming = False
@@ -234,6 +279,13 @@ def split():
             src_ext = os.path.splitext(f.filename)[1].lower() or ".mp4"
             src_path = os.path.join(work, "input" + src_ext)
             f.save(src_path)
+
+        # Production-file duplicate warning. Shared for both source paths; a 409
+        # here leaves the uploaded GCS object in place so "Split anyway" (force=1)
+        # can resubmit it — the bucket lifecycle rule reaps it otherwise.
+        blocked = dedupe_guard(src_path, production, force)
+        if blocked is not None:
+            return blocked
 
         out_dir = os.path.join(work, "out")
         os.makedirs(out_dir, exist_ok=True)

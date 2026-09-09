@@ -70,6 +70,20 @@
     .log.show { display: block; }
     .log .ok { color: var(--ok); }
     .log .err { color: var(--danger); }
+    .check { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+    .check input {
+      width: 18px; height: 18px; min-height: 0; margin: 0; flex: none;
+      -webkit-appearance: auto; appearance: auto; accent-color: var(--accent);
+    }
+    .check span { font-size: 14px; font-weight: 500; color: var(--text); text-transform: none; letter-spacing: 0; }
+    .dup { border: 1px solid #fcd34d; background: #fffbeb; border-radius: var(--radius); padding: 14px 16px; margin-top: 16px; }
+    .dup-msg { font-size: 14px; color: #92400e; margin-bottom: 12px; }
+    .dup-actions { display: flex; gap: 10px; }
+    .dup-actions .btn { width: auto; flex: 1; }
+    .btn-warn { background: #d97706; color: #fff; border-color: #d97706; }
+    .btn-warn:hover { opacity: 0.9; }
+    .btn-ghost { background: transparent; color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { background: var(--field-bg); }
   </style>
 </head>
 <body>
@@ -109,10 +123,24 @@
           <div class="fieldhint">Remainder &le;5s merges; &ge;6s splits off.</div>
         </div>
       </div>
+      <div class="field" style="margin-top: 14px;">
+        <label class="check">
+          <input id="production" type="checkbox" checked>
+          <span>Production video</span>
+        </label>
+        <div class="fieldhint">Warns you if this exact file was split here recently. Uncheck for test clips.</div>
+      </div>
     </div>
 
     <div class="card">
       <button class="btn btn-primary" id="go" disabled>Split video</button>
+      <div id="dup" class="dup" hidden>
+        <div id="dupMsg" class="dup-msg"></div>
+        <div class="dup-actions">
+          <button class="btn btn-warn" id="dupGo" type="button">Split anyway</button>
+          <button class="btn btn-ghost" id="dupCancel" type="button">Cancel</button>
+        </div>
+      </div>
       <div id="bar" class="bar"><div id="barFill"></div></div>
       <div id="log" class="log"></div>
     </div>
@@ -169,37 +197,59 @@ function downloadBlob(blob, name) {
   setTimeout(function () { URL.revokeObjectURL(url); }, 60000);
 }
 
-// POST to /split and treat the response as the zip (or a JSON error body).
-function requestSplit(body, isJson, prefix) {
-  log('Splitting on the server…');
-  var xhr = new XMLHttpRequest();
-  xhr.open('POST', 'split', true);
-  xhr.responseType = 'blob';
-  if (isJson) xhr.setRequestHeader('Content-Type', 'application/json');
-  xhr.onload = function () {
-    goBtn.disabled = false;
-    if (xhr.status === 200) {
-      barFill.style.width = '100%';
-      downloadBlob(xhr.response, prefix + '.zip');
-      log('Done — downloaded ' + prefix + '.zip', 'ok');
-    } else {
-      // Error body is JSON even though responseType is blob; read it back.
-      var reader = new FileReader();
-      reader.onload = function () {
-        var msg = reader.result;
-        try { msg = JSON.parse(reader.result).error || msg; } catch (e) {}
-        log('Error: ' + msg, 'err');
-      };
-      reader.readAsText(xhr.response);
-    }
-  };
-  xhr.onerror = function () { fail('request failed (network or size limit).'); };
-  xhr.send(body);
+var dup = document.getElementById('dup');
+var dupMsg = document.getElementById('dupMsg');
+var dupGo = document.getElementById('dupGo');
+var dupCancel = document.getElementById('dupCancel');
+var pendingResend = null;  // re-runs the split with force=1 ("Split anyway")
+
+function hideDup() { dup.hidden = true; pendingResend = null; }
+
+function showDup(msg, resend) {
+  pendingResend = resend;
+  dupMsg.textContent = msg || 'This looks like a duplicate of a recent production video.';
+  dup.hidden = false;
+  goBtn.disabled = false;
 }
 
-// Large uploads: get a signed URL, PUT the file straight to Cloud Storage
-// (no 32 MiB request cap), then hand /split just the object name.
-function gcsFlow(prefix, chunkLen) {
+dupGo.addEventListener('click', function () {
+  var fn = pendingResend;
+  hideDup();
+  if (fn) { goBtn.disabled = true; fn(); }
+});
+dupCancel.addEventListener('click', function () {
+  hideDup();
+  log('Cancelled — nothing was split.');
+});
+
+// Handle a finished /split request. `resend` re-runs it with force=1, wired to
+// the "Split anyway" button when the server flags a duplicate (HTTP 409).
+function handleSplitDone(xhr, prefix, resend) {
+  goBtn.disabled = false;
+  if (xhr.status === 200) {
+    barFill.style.width = '100%';
+    downloadBlob(xhr.response, prefix + '.zip');
+    log('Done — downloaded ' + prefix + '.zip', 'ok');
+    return;
+  }
+  // Non-200 body is JSON, even though responseType is blob. Read it back.
+  var reader = new FileReader();
+  reader.onload = function () {
+    var data = {};
+    try { data = JSON.parse(reader.result) || {}; } catch (e) {}
+    if (xhr.status === 409 && data.duplicate) {
+      log('Duplicate of a recent production video.');
+      showDup(data.message, resend);
+    } else {
+      log('Error: ' + (data.error || reader.result || ('HTTP ' + xhr.status)), 'err');
+    }
+  };
+  reader.readAsText(xhr.response);
+}
+
+// GCS flow: get a signed URL, PUT the file straight to Cloud Storage (no 32 MiB
+// request cap), then call /split with just the object name.
+function gcsFlow(prefix, chunkLen, production) {
   log('Requesting an upload URL…');
   fetch('signed-upload', {
     method: 'POST',
@@ -223,7 +273,7 @@ function gcsFlow(prefix, chunkLen) {
     };
     xhr.onload = function () {
       if (xhr.status === 200 || xhr.status === 201) {
-        requestSplit(JSON.stringify({ object: info.object, prefix: prefix, chunk_len: chunkLen }), true, prefix);
+        splitViaJson(info.object, prefix, chunkLen, production, false);
       } else {
         fail('storage upload failed (HTTP ' + xhr.status + '). Check the bucket CORS config.');
       }
@@ -233,14 +283,38 @@ function gcsFlow(prefix, chunkLen) {
   }).catch(function (err) { fail(err.message); });
 }
 
+// Call /split for an already-uploaded GCS object. On a duplicate warning,
+// "Split anyway" re-calls this with force=true against the same object (still
+// in the bucket — the 409 path does not delete it).
+function splitViaJson(objectName, prefix, chunkLen, production, force) {
+  log(force ? 'Splitting anyway…' : 'Splitting on the server…');
+  var xhr = new XMLHttpRequest();
+  xhr.open('POST', 'split', true);
+  xhr.responseType = 'blob';
+  xhr.setRequestHeader('Content-Type', 'application/json');
+  xhr.onload = function () {
+    handleSplitDone(xhr, prefix, function () {
+      splitViaJson(objectName, prefix, chunkLen, production, true);
+    });
+  };
+  xhr.onerror = function () { fail('request failed (network or size limit).'); };
+  xhr.send(JSON.stringify({
+    object: objectName, prefix: prefix, chunk_len: chunkLen,
+    production: production ? 1 : 0, force: force ? 1 : 0
+  }));
+}
+
 // Fallback when no bucket is configured: multipart POST straight to /split
 // (subject to Cloud Run's 32 MiB request cap; fine locally and for small clips).
-function directFlow(prefix, chunkLen) {
+// "Split anyway" re-uploads the file with force=1.
+function directFlow(prefix, chunkLen, production, force) {
   var form = new FormData();
   form.append('file', chosenFile);
   form.append('prefix', prefix);
   form.append('chunk_len', chunkLen);
-  log('Uploading video…');
+  form.append('production', production ? 1 : 0);
+  form.append('force', force ? 1 : 0);
+  log(force ? 'Re-uploading to split anyway…' : 'Uploading video…');
   var xhr = new XMLHttpRequest();
   xhr.open('POST', 'split', true);
   xhr.responseType = 'blob';
@@ -255,20 +329,9 @@ function directFlow(prefix, chunkLen) {
     if (xhr.readyState === xhr.HEADERS_RECEIVED && xhr.status === 200) log('Splitting on the server…');
   };
   xhr.onload = function () {
-    goBtn.disabled = false;
-    if (xhr.status === 200) {
-      barFill.style.width = '100%';
-      downloadBlob(xhr.response, prefix + '.zip');
-      log('Done — downloaded ' + prefix + '.zip', 'ok');
-    } else {
-      var reader = new FileReader();
-      reader.onload = function () {
-        var msg = reader.result;
-        try { msg = JSON.parse(reader.result).error || msg; } catch (e) {}
-        log('Error: ' + msg, 'err');
-      };
-      reader.readAsText(xhr.response);
-    }
+    handleSplitDone(xhr, prefix, function () {
+      directFlow(prefix, chunkLen, production, true);
+    });
   };
   xhr.onerror = function () { fail('upload failed (network or size limit).'); };
   xhr.send(form);
@@ -276,20 +339,22 @@ function directFlow(prefix, chunkLen) {
 
 goBtn.addEventListener('click', function () {
   if (!chosenFile) return;
+  hideDup();
   goBtn.disabled = true;
   logEl.innerHTML = ''; logEl.classList.add('show');
   bar.classList.add('show'); barFill.style.width = '0';
 
   var prefix = (document.getElementById('prefix').value || 'clip').trim();
   var chunkLen = document.getElementById('chunklen').value || '10';
+  var production = document.getElementById('production').checked;
 
   // Ask the server which upload path is available, then run it.
   fetch('config')
     .then(function (r) { return r.json(); })
     .catch(function () { return {}; })
     .then(function (cfg) {
-      if (cfg && cfg.gcs) gcsFlow(prefix, chunkLen);
-      else directFlow(prefix, chunkLen);
+      if (cfg && cfg.gcs) gcsFlow(prefix, chunkLen, production);
+      else directFlow(prefix, chunkLen, production, false);
     });
 });
 </script>

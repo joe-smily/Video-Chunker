@@ -16,6 +16,7 @@ matching 32 MiB response limit, so it can be any size.
 | --- | --- |
 | `app.py` | Flask app: `/`, `/config`, `/healthz`, `/signed-upload`, `/split` |
 | `chunking.py` | Chunk-boundary rule (10s chunks; remainder ≤5s merges, ≥6s splits off) |
+| `hashes.py` | Recent-upload fingerprint store (`hashes.json` in the bucket) for the duplicate warning |
 | `templates/index.html` | Upload page served at `/` |
 | `Dockerfile` | `python:3.12-slim` + `ffmpeg`, served by gunicorn |
 | `requirements.txt` | Flask, gunicorn, google-cloud-storage |
@@ -26,7 +27,25 @@ matching 32 MiB response limit, so it can be any size.
 - `GET /config` — `{gcs: bool, max_upload_bytes: int}`; the page uses this to pick its upload path
 - `GET /healthz` — health check (returns `ok`)
 - `POST /signed-upload` — JSON `{filename}` → `{url, object, method, headers, expires_in}`; a v4 signed `PUT` URL for the bucket. `501` if no bucket is configured.
-- `POST /split` — either JSON `{object, prefix, chunk_len}` (GCS flow) or multipart `file`, `prefix`, `chunk_len` (fallback). Streams back a zip.
+- `POST /split` — either JSON `{object, prefix, chunk_len}` (GCS flow) or multipart `file`, `prefix`, `chunk_len` (fallback). Streams back a zip. Also accepts `production` (default `1`) and `force` (default `0`) — see below.
+
+## Production-video duplicate warning
+
+When **Production video** is checked (the default), `/split` fingerprints the
+source with a streamed SHA-256 and compares it against `hashes.json` in
+`GCS_BUCKET` — an ordered list of the last 30 digests, newest first, no dates or
+user info. An exact byte-for-byte repeat returns **HTTP 409**
+`{"duplicate": true, "message": …}` instead of splitting; the page then offers
+**Split anyway** (resends with `force=1`, which records the digest again and
+proceeds) or **Cancel**. A non-duplicate records its digest and splits in one
+shot. Unchecking **Production video** skips all of it — nothing is read,
+recorded, or flagged.
+
+This is entirely best-effort: every read and write of `hashes.json` swallows
+errors, so if the bucket or object is unreachable the check is silently skipped
+and the split proceeds. The feature can never block or fail a split. No new env
+var — it reuses `GCS_BUCKET` and the app's storage client. (With no bucket
+configured, e.g. local runs, the check is simply inert.)
 
 ## Access model
 
@@ -103,6 +122,9 @@ gcloud storage buckets update gs://$BUCKET --cors-file=/tmp/cors.json
 
 ### 2. Deploy
 
+Deploy **from the repo** (`--source .`), not the console — committed code and the
+running service have drifted before.
+
 ```bash
 gcloud run deploy video-chunker \
   --source . \
@@ -112,6 +134,7 @@ gcloud run deploy video-chunker \
   --cpu 2 \
   --timeout 600 \
   --concurrency 4 \
+  --min-instances 0 \
   --max-instances 3 \
   --set-env-vars GCS_BUCKET=$BUCKET
 ```
@@ -124,6 +147,10 @@ Notes:
 - `--timeout 600`: matches the gunicorn timeout in the Dockerfile. 3600s is the
   Cloud Run max.
 - `--concurrency 4`: ffmpeg is CPU-bound, so don't push this high.
+- `--min-instances 0`: keep scaling request-based / scale-to-zero. A
+  manual-scaling or min-1 setting has previously pinned an instance on 24/7 and
+  run up the bill. After deploying, confirm in the console that the revision
+  shows **min instances 0** and CPU is **only allocated during requests**.
 
 ### 3. Grant the runtime service account access
 

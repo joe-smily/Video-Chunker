@@ -12,7 +12,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py chunking.py ./
+COPY app.py chunking.py hashes.py ./
 COPY templates ./templates
 
 # Cloud Run sets PORT; gunicorn serves the Flask app. One worker with a few
